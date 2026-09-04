@@ -49,17 +49,19 @@ def manage_review_case(
 
     if not 0.0 <= review_case.confidence <= 1.0:
         raise ValueError(
-            f"Review case confidence must be between 0 and 1 "
-            f"for case {review_case.case_id}."
+            "Review case confidence must be between "
+            f"0 and 1 for case {review_case.case_id}."
         )
 
-    risk = review_case.risk.upper()
-    recommendation = review_case.recommendation.upper()
+    risk = str(review_case.risk).upper()
+    recommendation = str(
+        review_case.recommendation
+    ).upper()
 
     # ---------------------------------------------------------
     # BLOCKED cases receive the highest review priority.
     # ---------------------------------------------------------
-    if recommendation == "BLOCK":
+    if recommendation in {"BLOCK", "BLOCKED"}:
         return ReviewDecision(
             case_id=review_case.case_id,
             status="OPEN",
@@ -85,8 +87,9 @@ def manage_review_case(
             assigned_to="FINANCIAL_RISK_REVIEW",
             decision="HUMAN_DECISION_REQUIRED",
             reason=(
-                "The investigation indicates elevated financial risk. "
-                "The case has been routed for human investigation."
+                "The investigation indicates elevated financial "
+                "risk. The case has been routed for human "
+                "investigation."
             ),
             confidence=review_case.confidence,
         )
@@ -94,7 +97,10 @@ def manage_review_case(
     # ---------------------------------------------------------
     # Normal human-review exceptions.
     # ---------------------------------------------------------
-    if recommendation == "HUMAN_REVIEW":
+    if recommendation in {
+        "HUMAN_REVIEW",
+        "HUMAN REVIEW",
+    }:
         return ReviewDecision(
             case_id=review_case.case_id,
             status="OPEN",

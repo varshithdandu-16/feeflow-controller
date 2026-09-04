@@ -37,6 +37,7 @@ class AgentAction(str, Enum):
     Workflow action produced by the agent assessment layer.
 
     These actions never directly execute financial operations.
+    The deterministic control engine remains authoritative.
     """
 
     CLEAR = "CLEAR"
@@ -160,14 +161,6 @@ class AgentRunResult:
     review_cases: list["ReviewCase"]
 
     review_decisions: list["ReviewDecision"]
-
-    # -----------------------------------------------------
-    # Optional until the human-review packet stage is
-    # connected to the orchestrator.
-    #
-    # This prevents older valid agent runs from breaking
-    # while keeping the contract ready for the next stage.
-    # -----------------------------------------------------
 
     human_review_packets: list[HumanReviewPacket] | None = None
 

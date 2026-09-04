@@ -1,10 +1,12 @@
 from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from src.agent.orchestrator import run_agent
 from src.api.service import run_control_pipeline
 from src.api.review import router as review_router
+from src.api.state_store import get_state, save_control_run, save_agent_run
 
 
 app = FastAPI(
@@ -14,6 +16,22 @@ app = FastAPI(
         "agent investigation, human review, and audit API"
     ),
     version="0.1.0",
+)
+
+
+# =========================================================
+# CORS
+# =========================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -36,11 +54,32 @@ def health_check():
         "version": "0.1.0",
     }
 
-
 # =========================================================
+# APPLICATION STATE
+# =========================================================
+
+@app.get("/state")
+def application_state():
+    """
+    Return the latest persisted FeeFlow application state.
+    """
+
+    try:
+        return {
+            "status": "ok",
+            "state": get_state(),
+        }
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to load application state: {exc}",
+        ) from exc
+    
+#=========================================================
 # DETERMINISTIC CONTROL PIPELINE
 # =========================================================
-
+    
 @app.post("/controls/run")
 def run_controls():
     """

@@ -65,7 +65,7 @@ def assess_control_result(result: dict) -> AgentAssessment:
     if action == "BLOCK":
         return AgentAssessment(
             case_id=case_id,
-            action=AgentAction.BLOCK,
+            action=AgentAction.BLOCKED,
             reason=(
                 "Control policy requires the case to be blocked. "
                 f"Severity: {severity}. {reason}"

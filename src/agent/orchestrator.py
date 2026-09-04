@@ -15,83 +15,83 @@ from src.audit.logger import create_audit_record, create_run_id
 
 def run_agent() -> AgentRunResult:
     """
-    Execute one complete FeeFlow Controller agent run.
+    FeeFlow Controller autonomous agent.
 
-    Workflow:
+    Agent workflow:
 
-        Deterministic Controls
+        Financial Controls
                 ↓
             Assessment
                 ↓
-          Investigation
+        Risk Investigation
                 ↓
-           Review Case
+        Human Review Routing
                 ↓
-          Review Manager
-                ↓
-       Human Review Packet
+          Review Packet
                 ↓
               Audit
                 ↓
-        Persistent Run Storage
+          Save Agent Run
 
-    The deterministic control engine remains authoritative.
+    The agent observes financial-control results and
+    automatically decides what workflow each case needs.
 
     The agent does NOT:
-
-        - approve transactions
-        - reject transactions
+        - approve payments
         - release payments
         - execute payments
         - modify financial records
+
+    Financial controls remain authoritative.
     """
 
-    # =====================================================
-    # 1. Create one ID for this complete agent execution
-    # =====================================================
+    # ---------------------------------------------------------
+    # 1. Start one agent run
+    # ---------------------------------------------------------
 
     run_id = create_run_id()
 
-    # =====================================================
-    # 2. Run deterministic financial controls
-    # =====================================================
+    # ---------------------------------------------------------
+    # 2. Get financial cases from the existing control engine
+    # ---------------------------------------------------------
 
     control_results = run_control_pipeline()
 
-    # =====================================================
-    # 3. Assess every control result
-    # =====================================================
+    # ---------------------------------------------------------
+    # 3. Agent assesses every financial case
+    # ---------------------------------------------------------
 
-    assessments = [
-        assess_control_result(result)
-        for result in control_results
-    ]
+    assessments = []
 
-    # =====================================================
-    # 4. Prepare workflow collections
-    # =====================================================
+    for control_result in control_results:
+        assessment = assess_control_result(control_result)
+        assessments.append(assessment)
+
+    # ---------------------------------------------------------
+    # 4. Prepare agent workflow results
+    # ---------------------------------------------------------
 
     investigations = []
     review_cases = []
     review_decisions = []
     human_review_packets = []
 
-    # =====================================================
-    # 5. Investigate exceptions and route them
-    # =====================================================
+    # ---------------------------------------------------------
+    # 5. Agent handles cases that need attention
+    # ---------------------------------------------------------
 
     for control_result, assessment in zip(
         control_results,
         assessments,
     ):
-        # CLEAR and MONITOR cases do not require
-        # investigation or human review.
+
+        # Safe cases continue automatically.
         if not assessment.requires_human:
             continue
 
-        # -------------------------------------------------
-        # Investigation
-        # -------------------------------------------------
+        # -----------------------------------------------------
+        # Investigate suspicious / exceptional case
+        # -----------------------------------------------------
 
         investigation = investigate_case(
             case_id=assessment.case_id,
@@ -106,9 +106,9 @@ def run_agent() -> AgentRunResult:
 
         investigations.append(investigation)
 
-        # -------------------------------------------------
-        # Create review case
-        # -------------------------------------------------
+        # -----------------------------------------------------
+        # Create a human-review case
+        # -----------------------------------------------------
 
         review_case = create_review_case(
             investigation=investigation,
@@ -116,9 +116,9 @@ def run_agent() -> AgentRunResult:
 
         review_cases.append(review_case)
 
-        # -------------------------------------------------
-        # Route through Review Manager
-        # -------------------------------------------------
+        # -----------------------------------------------------
+        # Automatically route the case
+        # -----------------------------------------------------
 
         review_decision = manage_review_case(
             review_case=review_case,
@@ -126,9 +126,9 @@ def run_agent() -> AgentRunResult:
 
         review_decisions.append(review_decision)
 
-        # -------------------------------------------------
-        # Build human-review packet
-        # -------------------------------------------------
+        # -----------------------------------------------------
+        # Prepare everything a human reviewer needs
+        # -----------------------------------------------------
 
         human_review_packet = prepare_human_review(
             review_case=review_case,
@@ -139,24 +139,23 @@ def run_agent() -> AgentRunResult:
             human_review_packet
         )
 
-    # =====================================================
+    # ---------------------------------------------------------
     # 6. Determine overall agent status
-    # =====================================================
+    # ---------------------------------------------------------
 
     requires_human = any(
         assessment.requires_human
         for assessment in assessments
     )
 
-    status = (
-        AgentRunStatus.REQUIRES_HUMAN
-        if requires_human
-        else AgentRunStatus.COMPLETED
-    )
+    if requires_human:
+        status = AgentRunStatus.REQUIRES_HUMAN
+    else:
+        status = AgentRunStatus.COMPLETED
 
-    # =====================================================
-    # 7. Create audit records
-    # =====================================================
+    # ---------------------------------------------------------
+    # 7. Create audit record for EVERY case
+    # ---------------------------------------------------------
 
     audit_records = []
 
@@ -164,6 +163,7 @@ def run_agent() -> AgentRunResult:
         control_results,
         assessments,
     ):
+
         assessment_data = asdict(assessment)
 
         audit_input = {
@@ -194,16 +194,16 @@ def run_agent() -> AgentRunResult:
             ),
         }
 
-        audit_records.append(
-            create_audit_record(
-                run_id=run_id,
-                assessment=audit_input,
-            )
+        audit_record = create_audit_record(
+            run_id=run_id,
+            assessment=audit_input,
         )
 
-    # =====================================================
+        audit_records.append(audit_record)
+
+    # ---------------------------------------------------------
     # 8. Build complete agent result
-    # =====================================================
+    # ---------------------------------------------------------
 
     result = AgentRunResult(
         status=status,
@@ -215,17 +215,17 @@ def run_agent() -> AgentRunResult:
         human_review_packets=human_review_packets,
     )
 
-    # =====================================================
-    # 9. Persist operational run
-    # =====================================================
+    # ---------------------------------------------------------
+    # 9. Save the complete agent run
+    # ---------------------------------------------------------
 
     save_agent_run(
         result=result,
         run_id=run_id,
     )
 
-    # =====================================================
-    # 10. Return complete agent execution
-    # =====================================================
+    # ---------------------------------------------------------
+    # 10. Return result to FastAPI
+    # ---------------------------------------------------------
 
     return result

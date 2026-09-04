@@ -18,7 +18,26 @@ def test_submit_human_review_decision():
     assert data["total_cases"] > 0
     assert len(data["cases"]) > 0
 
-    case_id = data["cases"][0]["case_id"]
+    # -------------------------------------------------
+    # Select an OPEN review case.
+    # The first case may already be RESOLVED.
+    # -------------------------------------------------
+
+    open_cases = [
+        case
+        for case in data["cases"]
+        if case.get("status") == "OPEN"
+    ]
+
+    assert len(open_cases) > 0, (
+        "No OPEN human-review case is available."
+    )
+
+    case_id = open_cases[0]["case_id"]
+
+    # -------------------------------------------------
+    # Submit human decision
+    # -------------------------------------------------
 
     decision_response = client.post(
         f"/review/cases/{case_id}/decision",
@@ -45,7 +64,9 @@ def test_submit_human_review_decision():
     ] is False
 
     assert result["decision"]["case_id"] == case_id
+
     assert result["decision"]["decision"] == "ESCALATE"
+
     assert result["decision"]["reviewer"] == (
         "FINANCIAL_RISK_REVIEW"
     )
