@@ -15,34 +15,13 @@ from src.audit.logger import create_audit_record, create_run_id
 
 def run_agent() -> AgentRunResult:
     """
-    FeeFlow Controller autonomous agent.
+    Execute one complete FeeFlow Controller agent run.
 
-    Agent workflow:
+    Deterministic financial controls remain authoritative.
+    The agent interprets findings, investigates exceptions,
+    routes human review, prepares evidence, and creates audit records.
 
-        Financial Controls
-                ↓
-            Assessment
-                ↓
-        Risk Investigation
-                ↓
-        Human Review Routing
-                ↓
-          Review Packet
-                ↓
-              Audit
-                ↓
-          Save Agent Run
-
-    The agent observes financial-control results and
-    automatically decides what workflow each case needs.
-
-    The agent does NOT:
-        - approve payments
-        - release payments
-        - execute payments
-        - modify financial records
-
-    Financial controls remain authoritative.
+    The agent never approves, releases, executes, or modifies payments.
     """
 
     # ---------------------------------------------------------
@@ -52,23 +31,40 @@ def run_agent() -> AgentRunResult:
     run_id = create_run_id()
 
     # ---------------------------------------------------------
-    # 2. Get financial cases from the existing control engine
+    # 2. Execute deterministic financial controls
     # ---------------------------------------------------------
 
     control_results = run_control_pipeline()
 
     # ---------------------------------------------------------
-    # 3. Agent assesses every financial case
+    # 3. Assess every control result
     # ---------------------------------------------------------
 
     assessments = []
 
     for control_result in control_results:
-        assessment = assess_control_result(control_result)
+        reconciliation = control_result.get("reconciliation", {})
+        control = control_result.get("control", {})
+
+        # Preserve the authoritative control decision while enriching
+        # the agent explanation with the actual reconciliation finding.
+        enriched_result = {
+            **control_result,
+            "control": {
+                **control,
+                "reason": (
+                    f"{control.get('reason', 'No control reason supplied.')} "
+                    f"Reconciliation: "
+                    f"{reconciliation.get('message', 'No reconciliation message supplied.')}"
+                ),
+            },
+        }
+
+        assessment = assess_control_result(enriched_result)
         assessments.append(assessment)
 
     # ---------------------------------------------------------
-    # 4. Prepare agent workflow results
+    # 4. Prepare workflow collections
     # ---------------------------------------------------------
 
     investigations = []
@@ -77,7 +73,7 @@ def run_agent() -> AgentRunResult:
     human_review_packets = []
 
     # ---------------------------------------------------------
-    # 5. Agent handles cases that need attention
+    # 5. Investigate cases requiring attention
     # ---------------------------------------------------------
 
     for control_result, assessment in zip(
@@ -85,20 +81,31 @@ def run_agent() -> AgentRunResult:
         assessments,
     ):
 
-        # Safe cases continue automatically.
         if not assessment.requires_human:
             continue
 
-        # -----------------------------------------------------
-        # Investigate suspicious / exceptional case
-        # -----------------------------------------------------
+        reconciliation = control_result.get(
+            "reconciliation",
+            {},
+        )
+
+        control = control_result.get(
+            "control",
+            {},
+        )
 
         investigation = investigate_case(
             case_id=assessment.case_id,
             action=assessment.action,
-            severity=control_result["control"]["severity"],
-            reason=control_result["control"]["reason"],
-            evidence=control_result.get(
+            severity=control.get(
+                "severity",
+                reconciliation.get(
+                    "severity",
+                    "UNKNOWN",
+                ),
+            ),
+            reason=assessment.reason,
+            evidence=reconciliation.get(
                 "evidence",
                 {},
             ),
@@ -107,7 +114,7 @@ def run_agent() -> AgentRunResult:
         investigations.append(investigation)
 
         # -----------------------------------------------------
-        # Create a human-review case
+        # Create human review case
         # -----------------------------------------------------
 
         review_case = create_review_case(
@@ -117,7 +124,7 @@ def run_agent() -> AgentRunResult:
         review_cases.append(review_case)
 
         # -----------------------------------------------------
-        # Automatically route the case
+        # Route review
         # -----------------------------------------------------
 
         review_decision = manage_review_case(
@@ -127,7 +134,7 @@ def run_agent() -> AgentRunResult:
         review_decisions.append(review_decision)
 
         # -----------------------------------------------------
-        # Prepare everything a human reviewer needs
+        # Prepare human review packet
         # -----------------------------------------------------
 
         human_review_packet = prepare_human_review(
@@ -154,7 +161,7 @@ def run_agent() -> AgentRunResult:
         status = AgentRunStatus.COMPLETED
 
     # ---------------------------------------------------------
-    # 7. Create audit record for EVERY case
+    # 7. Create audit record for every case
     # ---------------------------------------------------------
 
     audit_records = []
@@ -164,31 +171,51 @@ def run_agent() -> AgentRunResult:
         assessments,
     ):
 
-        assessment_data = asdict(assessment)
+        reconciliation = control_result.get(
+            "reconciliation",
+            {},
+        )
+
+        control = control_result.get(
+            "control",
+            {},
+        )
 
         audit_input = {
-            **assessment_data,
+            **asdict(assessment),
 
-            "reconciliation_status": control_result.get(
-                "reconciliation_status",
+            "reconciliation_status": reconciliation.get(
+                "status",
                 "UNKNOWN",
             ),
 
-            "exception_code": control_result.get(
+            "exception_code": control.get(
                 "exception_code",
+                reconciliation.get(
+                    "discrepancy_type",
+                    "NONE",
+                ),
             ),
 
-            "control_action": control_result["control"].get(
+            "control_action": control.get(
                 "action",
                 "UNKNOWN",
             ),
 
-            "severity": control_result["control"].get(
+            "severity": control.get(
                 "severity",
-                "UNKNOWN",
+                reconciliation.get(
+                    "severity",
+                    "UNKNOWN",
+                ),
             ),
 
-            "evidence": control_result.get(
+            "reconciliation_message": reconciliation.get(
+                "message",
+                "No reconciliation message supplied.",
+            ),
+
+            "evidence": reconciliation.get(
                 "evidence",
                 {},
             ),
@@ -216,7 +243,7 @@ def run_agent() -> AgentRunResult:
     )
 
     # ---------------------------------------------------------
-    # 9. Save the complete agent run
+    # 9. Persist complete run
     # ---------------------------------------------------------
 
     save_agent_run(
@@ -225,7 +252,7 @@ def run_agent() -> AgentRunResult:
     )
 
     # ---------------------------------------------------------
-    # 10. Return result to FastAPI
+    # 10. Return result to API
     # ---------------------------------------------------------
 
     return result
