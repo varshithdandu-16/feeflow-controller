@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 from src.agent.contracts import AgentInvestigation
 
@@ -9,7 +10,7 @@ class ReviewCase:
     finding: str
     risk: str
     explanation: str
-    evidence: list[str]
+    evidence: dict[str, Any]
     recommendation: str
     confidence: float
     status: str
@@ -22,12 +23,17 @@ def create_review_case(
     Convert an agent investigation into a structured
     human-review case.
 
-    This module does not approve, reject, block, or modify
-    any financial transaction.
+    Evidence is preserved exactly as a structured dictionary
+    so reviewers can see the actual verification details.
+
+    This module does not approve, reject, block, release,
+    or modify any financial transaction.
     """
 
     if not investigation.case_id:
-        raise ValueError("Investigation case_id cannot be empty.")
+        raise ValueError(
+            "Investigation case_id cannot be empty."
+        )
 
     if not investigation.finding:
         raise ValueError(
@@ -41,13 +47,24 @@ def create_review_case(
             f"for case {investigation.case_id}."
         )
 
+    if not isinstance(investigation.evidence, dict):
+        raise ValueError(
+            f"Investigation evidence must be a dictionary "
+            f"for case {investigation.case_id}."
+        )
+
+    recommendation = investigation.recommendation
+
+    if hasattr(recommendation, "value"):
+        recommendation = recommendation.value
+
     return ReviewCase(
         case_id=investigation.case_id,
         finding=investigation.finding,
         risk=investigation.risk,
         explanation=investigation.explanation,
-        evidence=list(investigation.evidence),
-        recommendation=investigation.recommendation.value,
+        evidence=dict(investigation.evidence),
+        recommendation=str(recommendation),
         confidence=investigation.confidence,
         status="OPEN",
     )

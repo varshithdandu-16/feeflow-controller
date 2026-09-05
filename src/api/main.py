@@ -4,9 +4,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.agent.orchestrator import run_agent
+from src.agent.run_store import get_latest_agent_run
 from src.api.service import run_control_pipeline
 from src.api.review import router as review_router
-from src.api.state_store import get_state, save_control_run, save_agent_run
+from src.api.audit import router as audit_router
+from src.api.transaction import router as transaction_router
 
 
 app = FastAPI(
@@ -28,6 +30,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -40,6 +44,8 @@ app.add_middleware(
 # =========================================================
 
 app.include_router(review_router)
+app.include_router(audit_router)
+app.include_router(transaction_router)
 
 
 # =========================================================
@@ -54,6 +60,7 @@ def health_check():
         "version": "0.1.0",
     }
 
+
 # =========================================================
 # APPLICATION STATE
 # =========================================================
@@ -65,9 +72,11 @@ def application_state():
     """
 
     try:
+        latest = get_latest_agent_run()
+
         return {
             "status": "ok",
-            "state": get_state(),
+            "state": latest,
         }
 
     except Exception as exc:
@@ -75,11 +84,12 @@ def application_state():
             status_code=500,
             detail=f"Unable to load application state: {exc}",
         ) from exc
-    
-#=========================================================
+
+
+# =========================================================
 # DETERMINISTIC CONTROL PIPELINE
 # =========================================================
-    
+
 @app.post("/controls/run")
 def run_controls():
     """
@@ -141,6 +151,31 @@ def run_controls():
 
 
 # =========================================================
+# LATEST AGENT RUN
+# =========================================================
+
+@app.get("/agent/latest")
+def latest_agent_run():
+    """
+    Return the newest persisted agent run for UI hydration.
+    """
+
+    try:
+        run = get_latest_agent_run()
+
+        return {
+            "status": "available",
+            "run": run,
+        }
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to load latest agent run: {exc}",
+        ) from exc
+
+
+# =========================================================
 # COMPLETE AGENT PIPELINE
 # =========================================================
 
@@ -148,96 +183,146 @@ def run_controls():
 def run_agent_endpoint():
     """
     Execute one complete FeeFlow Controller agent run.
+
+    The response shape intentionally matches the frontend:
+    cases_processed, summary, assessments, investigations,
+    review_cases, review_decisions, and audit_records are all
+    returned at the top level.
     """
 
     try:
         result = run_agent()
 
+        # -----------------------------------------------------
+        # SUMMARY
+        # -----------------------------------------------------
+
+        clear_count = sum(
+            1
+            for assessment in result.assessments
+            if assessment.action.value == "CLEAR"
+        )
+
+        monitor_count = sum(
+            1
+            for assessment in result.assessments
+            if assessment.action.value == "MONITOR"
+        )
+
+        human_review_count = sum(
+            1
+            for assessment in result.assessments
+            if assessment.action.value == "HUMAN_REVIEW"
+        )
+
+        blocked_count = sum(
+            1
+            for assessment in result.assessments
+            if assessment.action.value == "BLOCKED"
+        )
+
         summary = {
-            "clear": sum(
-                1
-                for assessment in result.assessments
-                if assessment.action.value == "CLEAR"
-            ),
-            "monitor": sum(
-                1
-                for assessment in result.assessments
-                if assessment.action.value == "MONITOR"
-            ),
-            "human_review": sum(
-                1
-                for assessment in result.assessments
-                if assessment.action.value == "HUMAN_REVIEW"
-            ),
-            "blocked": sum(
-                1
-                for assessment in result.assessments
-                if assessment.action.value == "BLOCKED"
-            ),
+            "clear": clear_count,
+            "monitor": monitor_count,
+            "human_review": human_review_count,
+            "blocked": blocked_count,
         }
+
+        # -----------------------------------------------------
+        # ASSESSMENTS
+        # -----------------------------------------------------
+
+        assessments = [
+            {
+                "case_id": assessment.case_id,
+                "action": assessment.action.value,
+                "reason": assessment.reason,
+                "requires_human": assessment.requires_human,
+            }
+            for assessment in result.assessments
+        ]
+
+        # -----------------------------------------------------
+        # INVESTIGATIONS
+        # -----------------------------------------------------
+
+        investigations = [
+            {
+                "case_id": investigation.case_id,
+                "finding": investigation.finding,
+                "risk": investigation.risk,
+                "explanation": investigation.explanation,
+                "evidence": investigation.evidence,
+                "recommendation": (
+                    investigation.recommendation.value
+                    if hasattr(
+                        investigation.recommendation,
+                        "value",
+                    )
+                    else investigation.recommendation
+                ),
+                "confidence": investigation.confidence,
+            }
+            for investigation in result.investigations
+        ]
+
+        # -----------------------------------------------------
+        # REVIEW CASES
+        # -----------------------------------------------------
+
+        review_cases = [
+            {
+                "case_id": review_case.case_id,
+                "finding": review_case.finding,
+                "risk": review_case.risk,
+                "explanation": review_case.explanation,
+                "evidence": review_case.evidence,
+                "recommendation": review_case.recommendation,
+                "confidence": review_case.confidence,
+                "status": review_case.status,
+            }
+            for review_case in result.review_cases
+        ]
+
+        # -----------------------------------------------------
+        # REVIEW DECISIONS
+        # -----------------------------------------------------
+
+        review_decisions = [
+            {
+                "case_id": decision.case_id,
+                "status": decision.status,
+                "priority": decision.priority,
+                "assigned_to": decision.assigned_to,
+                "decision": decision.decision,
+                "reason": decision.reason,
+                "confidence": decision.confidence,
+            }
+            for decision in result.review_decisions
+        ]
+
+        # -----------------------------------------------------
+        # AUDIT RECORDS
+        # -----------------------------------------------------
+
+        audit_records = [
+            asdict(record)
+            for record in result.audit_records
+        ]
+
+        # -----------------------------------------------------
+        # FRONTEND-COMPATIBLE RESPONSE
+        # -----------------------------------------------------
 
         return {
             "status": result.status.value,
             "cases_processed": len(result.assessments),
-
             "summary": summary,
-
-            "assessments": [
-                {
-                    "case_id": assessment.case_id,
-                    "action": assessment.action.value,
-                    "reason": assessment.reason,
-                    "requires_human": assessment.requires_human,
-                }
-                for assessment in result.assessments
-            ],
-
-            "investigations": [
-                {
-                    "case_id": investigation.case_id,
-                    "finding": investigation.finding,
-                    "risk": investigation.risk,
-                    "explanation": investigation.explanation,
-                    "evidence": investigation.evidence,
-                    "recommendation": (
-                        investigation.recommendation.value
-                    ),
-                    "confidence": investigation.confidence,
-                }
-                for investigation in result.investigations
-            ],
-
-            "review_cases": [
-                {
-                    "case_id": review_case.case_id,
-                    "finding": review_case.finding,
-                    "risk": review_case.risk,
-                    "explanation": review_case.explanation,
-                    "evidence": review_case.evidence,
-                    "recommendation": review_case.recommendation,
-                    "confidence": review_case.confidence,
-                    "status": review_case.status,
-                }
-                for review_case in result.review_cases
-            ],
-
-            "review_decisions": [
-                {
-                    "case_id": decision.case_id,
-                    "status": decision.status,
-                    "priority": decision.priority,
-                    "assigned_to": decision.assigned_to,
-                    "decision": decision.decision,
-                    "reason": decision.reason,
-                    "confidence": decision.confidence,
-                }
-                for decision in result.review_decisions
-            ],
-
-            "audit_records": [
-                asdict(record)
-                for record in result.audit_records
-            ],
+            "assessments": assessments,
+            "investigations": investigations,
+            "review_cases": review_cases,
+            "review_decisions": review_decisions,
+            "audit_records": audit_records,
         }
 
     except FileNotFoundError as exc:
@@ -249,7 +334,7 @@ def run_agent_endpoint():
     except ValueError as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Financial data validation failed: {exc}",
+            detail=f"Agent validation failed: {exc}",
         ) from exc
 
     except Exception as exc:

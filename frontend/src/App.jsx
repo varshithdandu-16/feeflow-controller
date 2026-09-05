@@ -1,135 +1,228 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
+
 import {
   checkHealth,
   runAgent,
+  getLatestAgentRun,
   getReviewCases,
   submitReviewDecision,
+  verifyTransaction,
+  getAuditRecords,
 } from "./api";
 
+const FILTERS = [
+  "ALL",
+  "CLEAR",
+  "MONITOR",
+  "HUMAN_REVIEW",
+  "BLOCKED",
+];
+
+const DECISIONS = [
+  "CONFIRM_REVIEW",
+  "ESCALATE",
+  "REQUEST_MORE_EVIDENCE",
+];
+
+function normalizeStatus(value) {
+  const status = String(value || "UNKNOWN").toUpperCase();
+
+  if (status === "AUTO_CLEAR") return "CLEAR";
+  if (status === "BLOCK") return "BLOCKED";
+  return status;
+}
+
+function pretty(value) {
+  return String(value || "—")
+    .replaceAll("_", " ")
+    .toUpperCase();
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+
+  return date.toLocaleString();
+}
+
+function formatMoney(value, currency = "INR") {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ""
+  ) {
+    return "—";
+  }
+
+  const amount = Number(value);
+
+  if (Number.isNaN(amount)) {
+    return String(value);
+  }
+
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+function StatusBadge({ status }) {
+  const normalized = normalizeStatus(status);
+
+  return (
+    <span
+      className={`status-badge ${normalized
+        .toLowerCase()
+        .replaceAll("_", "-")}`}
+    >
+      {pretty(normalized)}
+    </span>
+  );
+}
+
 function App() {
-  const [activeView, setActiveView] = useState("overview");
-  const [agentData, setAgentData] = useState(null);
-  const [reviewCases, setReviewCases] = useState([]);
-  const [selectedCase, setSelectedCase] = useState(null);
+  const [activeView, setActiveView] =
+    useState("overview");
 
-  const [backendStatus, setBackendStatus] = useState("Checking backend...");
-  const [isRunning, setIsRunning] = useState(false);
-  const [isLoadingReviews, setIsLoadingReviews] = useState(false);
+  const [statusFilter, setStatusFilter] =
+    useState("ALL");
+
+  const [agentData, setAgentData] =
+    useState(null);
+
+  const [reviewCases, setReviewCases] =
+    useState([]);
+
+  const [auditRecords, setAuditRecords] =
+    useState([]);
+
+  const [selectedCase, setSelectedCase] =
+    useState(null);
+
+  const [verificationData, setVerificationData] =
+    useState(null);
+
+  const [backendStatus, setBackendStatus] =
+    useState("Checking backend...");
+
+  const [isRunning, setIsRunning] =
+    useState(false);
+
+  const [
+    isLoadingReviews,
+    setIsLoadingReviews,
+  ] = useState(false);
+
+  const [
+    isLoadingAudit,
+    setIsLoadingAudit,
+  ] = useState(false);
+
+  const [isVerifying, setIsVerifying] =
+    useState(false);
+
+  const [
+    isSubmittingDecision,
+    setIsSubmittingDecision,
+  ] = useState(false);
+
   const [error, setError] = useState("");
+  const [successMessage, setSuccessMessage] =
+    useState("");
 
-  const [decision, setDecision] = useState("");
-  const [decisionReason, setDecisionReason] = useState("");
-  const [reviewer, setReviewer] = useState("Horizon Risk Team");
+  const [decision, setDecision] =
+    useState("");
 
-  // --------------------------------------------------
-  // BACKEND HEALTH
-  // --------------------------------------------------
+  const [decisionReason, setDecisionReason] =
+    useState("");
+
+  const [reviewer, setReviewer] =
+    useState("Horizon Risk Team");
 
   useEffect(() => {
-    async function loadHealth() {
+    async function bootstrap() {
       try {
         await checkHealth();
         setBackendStatus("Backend ready");
       } catch {
-        setBackendStatus("Backend unavailable");
+        setBackendStatus(
+          "Backend unavailable",
+        );
+      }
+
+      try {
+        const latest =
+          await getLatestAgentRun();
+
+        if (latest?.run) {
+          setAgentData(latest.run);
+        }
+      } catch {
+        // No previous run is acceptable.
+      }
+
+      try {
+        await refreshReviews();
+      } catch {
+        setReviewCases([]);
+      }
+
+      try {
+        await refreshAudit();
+      } catch {
+        setAuditRecords([]);
       }
     }
 
-    loadHealth();
+    bootstrap();
   }, []);
 
-  // --------------------------------------------------
-  // RUN AGENT
-  // --------------------------------------------------
-
-  async function handleRunAgent() {
-    setIsRunning(true);
-    setError("");
-
-    try {
-      const result = await runAgent();
-
-      setAgentData(result);
-
-      // Load the actual review queue after the agent finishes.
-      try {
-        const reviews = await getReviewCases();
-        setReviewCases(
-          Array.isArray(reviews)
-            ? reviews
-            : reviews?.cases || reviews?.review_cases || [],
-        );
-      } catch {
-        // Agent result is still useful even if review loading fails.
-        setReviewCases(result.review_cases || []);
-      }
-
-      setBackendStatus("Backend ready");
-      setActiveView("overview");
-    } catch (err) {
-      setError(err.message || "Unable to run the agent.");
-    } finally {
-      setIsRunning(false);
-    }
-  }
-
-  // --------------------------------------------------
-  // LOAD REVIEW QUEUE
-  // --------------------------------------------------
-
-  async function handleLoadReviews() {
+  async function refreshReviews() {
     setIsLoadingReviews(true);
-    setError("");
 
     try {
-      const result = await getReviewCases();
+      const data =
+        await getReviewCases();
 
-      const cases = Array.isArray(result)
-        ? result
-        : result?.cases || result?.review_cases || [];
+      const cases = Array.isArray(data)
+        ? data
+        : data?.cases ||
+          data?.review_cases ||
+          [];
 
       setReviewCases(cases);
-    } catch (err) {
-      setError(err.message || "Unable to load review cases.");
+
+      return cases;
     } finally {
       setIsLoadingReviews(false);
     }
   }
 
-  // --------------------------------------------------
-  // HUMAN DECISION
-  // --------------------------------------------------
-
-  async function handleDecision() {
-    if (!selectedCase || !decision) {
-      return;
-    }
-
-    setError("");
+  async function refreshAudit() {
+    setIsLoadingAudit(true);
 
     try {
-      await submitReviewDecision(
-        selectedCase.case_id,
-        decision,
-        decisionReason,
-        reviewer,
-      );
+      const data =
+        await getAuditRecords();
 
-      setDecision("");
-      setDecisionReason("");
+      const records = Array.isArray(data)
+        ? data
+        : data?.records || [];
 
-      await handleLoadReviews();
+      setAuditRecords(records);
 
-      setSelectedCase(null);
-    } catch (err) {
-      setError(err.message || "Unable to submit review decision.");
+      return records;
+    } finally {
+      setIsLoadingAudit(false);
     }
   }
-
-  // --------------------------------------------------
-  // AGENT SUMMARY
-  // --------------------------------------------------
 
   const summary = agentData?.summary || {
     clear: 0,
@@ -138,116 +231,422 @@ function App() {
     blocked: 0,
   };
 
-  const casesProcessed = agentData?.cases_processed || 0;
+  const casesProcessed =
+    agentData?.cases_processed || 0;
 
-  const clearPercentage = useMemo(() => {
-    if (!casesProcessed) return "0.0";
-    return ((summary.clear / casesProcessed) * 100).toFixed(1);
-  }, [summary.clear, casesProcessed]);
+  const assessments =
+    agentData?.assessments || [];
 
-  const reviewPercentage = useMemo(() => {
-    if (!casesProcessed) return "0.0";
-    return ((summary.human_review / casesProcessed) * 100).toFixed(1);
-  }, [summary.human_review, casesProcessed]);
+  const investigations =
+    agentData?.investigations || [];
 
-  const blockedPercentage = useMemo(() => {
-    if (!casesProcessed) return "0.0";
-    return ((summary.blocked / casesProcessed) * 100).toFixed(1);
-  }, [summary.blocked, casesProcessed]);
+  const openReviewCount =
+    reviewCases.filter(
+      (item) =>
+        String(
+          item?.status || "",
+        ).toUpperCase() === "OPEN",
+    ).length;
 
-  const assessments = agentData?.assessments || [];
-  const investigations = agentData?.investigations || [];
-  const auditRecords = agentData?.audit_records || [];
+  const allCases = useMemo(() => {
+    return assessments.map(
+      (assessment) => {
+        const investigation =
+          investigations.find(
+            (item) =>
+              item.case_id ===
+              assessment.case_id,
+          );
 
-  // --------------------------------------------------
-  // HELPERS
-  // --------------------------------------------------
+        const review =
+          reviewCases.find(
+            (item) =>
+              item.case_id ===
+              assessment.case_id,
+          );
 
-  function getAssessment(caseId) {
-    return assessments.find(
-      (item) => item.case_id === caseId,
+        return {
+          case_id:
+            assessment.case_id,
+
+          status:
+            normalizeStatus(
+              assessment.action,
+            ),
+
+          action:
+            assessment.action,
+
+          requires_human:
+            assessment.requires_human,
+
+          reason:
+            investigation?.explanation ||
+            investigation?.finding ||
+            review?.explanation ||
+            review?.finding ||
+            assessment.reason ||
+            "No explanation available.",
+
+          finding:
+            investigation?.finding ||
+            review?.finding ||
+            null,
+
+          explanation:
+            investigation?.explanation ||
+            review?.explanation ||
+            null,
+
+          risk:
+            investigation?.risk ||
+            review?.risk ||
+            null,
+
+          evidence:
+            investigation?.evidence ||
+            review?.evidence ||
+            null,
+
+          recommendation:
+            investigation?.recommendation ||
+            review?.recommendation ||
+            null,
+
+          confidence:
+            investigation?.confidence ||
+            review?.confidence ||
+            null,
+        };
+      },
     );
-  }
+  }, [
+    assessments,
+    investigations,
+    reviewCases,
+  ]);
 
-  function getInvestigation(caseId) {
-    return investigations.find(
-      (item) => item.case_id === caseId,
+  const filteredCases = useMemo(() => {
+    if (statusFilter === "ALL") {
+      return allCases;
+    }
+
+    return allCases.filter(
+      (item) =>
+        normalizeStatus(item.status) ===
+        statusFilter,
     );
+  }, [
+    allCases,
+    statusFilter,
+  ]);
+
+  const selectedId =
+    selectedCase?.case_id || null;
+
+  const selectedAssessment =
+    selectedId
+      ? assessments.find(
+          (item) =>
+            item.case_id === selectedId,
+        )
+      : null;
+
+  const selectedInvestigation =
+    selectedId
+      ? investigations.find(
+          (item) =>
+            item.case_id === selectedId,
+        )
+      : null;
+
+  const selectedReview =
+    selectedId
+      ? reviewCases.find(
+          (item) =>
+            item.case_id === selectedId,
+        )
+      : null;
+
+  const selectedEvidence =
+    selectedInvestigation?.evidence ||
+    selectedReview?.evidence ||
+    verificationData
+      ?.reconciliation
+      ?.evidence ||
+    null;
+
+  const expectedAmount =
+    verificationData
+      ?.reconciliation
+      ?.evidence
+      ?.expected_amount ??
+    selectedEvidence
+      ?.expected_amount;
+
+  const observedAmount =
+    verificationData
+      ?.reconciliation
+      ?.evidence
+      ?.observed_amount ??
+    selectedEvidence
+      ?.observed_amount;
+
+  const difference =
+    verificationData
+      ?.reconciliation
+      ?.evidence
+      ?.difference ??
+    selectedEvidence?.difference;
+
+  const currency =
+    selectedEvidence?.currency ||
+    "INR";
+
+  const caseHistory = useMemo(() => {
+    if (!selectedId) {
+      return [];
+    }
+
+    return auditRecords
+      .filter(
+        (record) =>
+          record?.case_id === selectedId,
+      )
+      .sort((a, b) => {
+        const aTime =
+          new Date(
+            a?.timestamp || 0,
+          ).getTime();
+
+        const bTime =
+          new Date(
+            b?.timestamp || 0,
+          ).getTime();
+
+        return bTime - aTime;
+      });
+  }, [
+    auditRecords,
+    selectedId,
+  ]);
+
+  async function openCase(item) {
+    setSelectedCase(item);
+    setVerificationData(null);
+    setDecision("");
+    setDecisionReason("");
+    setError("");
+    setSuccessMessage("");
+
+    setIsVerifying(true);
+
+    try {
+      const result =
+        await verifyTransaction(
+          item.case_id,
+        );
+
+      setVerificationData(result);
+    } catch (err) {
+      setError(
+        err.message ||
+          "Unable to verify transaction.",
+      );
+    } finally {
+      setIsVerifying(false);
+    }
   }
 
-  function getStatus(caseId) {
-    const assessment = getAssessment(caseId);
-
-    if (!assessment) {
-      return "UNKNOWN";
-    }
-
-    if (assessment.action === "AUTO_CLEAR") {
-      return "CLEAR";
-    }
-
-    if (assessment.action === "CLEAR") {
-      return "CLEAR";
-    }
-
-    if (assessment.action === "HUMAN_REVIEW") {
-      return "HUMAN_REVIEW";
-    }
-
-    if (
-      assessment.action === "BLOCK" ||
-      assessment.action === "BLOCKED"
-    ) {
-      return "BLOCKED";
-    }
-
-    return assessment.action;
-  }
-
-  function getReason(caseId) {
-    const assessment = getAssessment(caseId);
-    const investigation = getInvestigation(caseId);
-
-    return (
-      investigation?.explanation ||
-      investigation?.finding ||
-      assessment?.reason ||
-      "No explanation available."
-    );
-  }
-
-  function openCase(caseItem) {
-    setSelectedCase(caseItem);
+  function closeCase() {
+    setSelectedCase(null);
+    setVerificationData(null);
     setDecision("");
     setDecisionReason("");
   }
 
-  // --------------------------------------------------
-  // CASES
-  // --------------------------------------------------
+  function goOverview() {
+    setActiveView("overview");
+    setStatusFilter("ALL");
+    closeCase();
+    setError("");
+    setSuccessMessage("");
+  }
 
-  const displayedCases = assessments.map((assessment) => {
-    const investigation = getInvestigation(
-      assessment.case_id,
+  function goControls(filter = "ALL") {
+    setActiveView("controls");
+    setStatusFilter(filter);
+    closeCase();
+    setError("");
+    setSuccessMessage("");
+  }
+
+  async function goReviews() {
+    setActiveView("reviews");
+    setStatusFilter("ALL");
+    setError("");
+
+    try {
+      await refreshReviews();
+    } catch (err) {
+      setError(
+        err.message ||
+          "Unable to load review queue.",
+      );
+    }
+  }
+
+  async function goAudit() {
+    setActiveView("audit");
+    setStatusFilter("ALL");
+    setError("");
+
+    try {
+      await refreshAudit();
+    } catch (err) {
+      setError(
+        err.message ||
+          "Unable to load audit trail.",
+      );
+    }
+  }
+
+  async function handleRunAgent() {
+    setIsRunning(true);
+    setError("");
+    setSuccessMessage("");
+
+    try {
+      const result =
+        await runAgent();
+
+      setAgentData(result);
+
+      await Promise.all([
+        refreshReviews(),
+        refreshAudit(),
+      ]);
+
+      setActiveView("overview");
+      setStatusFilter("ALL");
+
+      setSuccessMessage(
+        `Agent completed — ${
+          result.cases_processed || 0
+        } financial cases evaluated.`,
+      );
+    } catch (err) {
+      setError(
+        err.message ||
+          "Agent execution failed.",
+      );
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  async function handleDecision() {
+    if (!selectedCase) {
+      return;
+    }
+
+    if (!DECISIONS.includes(decision)) {
+      setError(
+        "Select a valid human-review decision.",
+      );
+      return;
+    }
+
+    if (!decisionReason.trim()) {
+      setError(
+        "A decision reason is required.",
+      );
+      return;
+    }
+
+    if (!reviewer.trim()) {
+      setError(
+        "Reviewer identity is required.",
+      );
+      return;
+    }
+
+    setIsSubmittingDecision(true);
+    setError("");
+    setSuccessMessage("");
+
+    try {
+      const caseId =
+        selectedCase.case_id;
+
+      await submitReviewDecision(
+        caseId,
+        decision,
+        decisionReason.trim(),
+        reviewer.trim(),
+      );
+
+      await Promise.all([
+        refreshReviews(),
+        refreshAudit(),
+      ]);
+
+      setSelectedCase(null);
+      setVerificationData(null);
+      setDecision("");
+      setDecisionReason("");
+
+      setSuccessMessage(
+        `${caseId} decision recorded in the server-side audit trail.`,
+      );
+    } catch (err) {
+      setError(
+        err.message ||
+          "Unable to record human-review decision.",
+      );
+    } finally {
+      setIsSubmittingDecision(
+        false,
+      );
+    }
+  }
+
+  const currentSelectedStatus =
+    selectedReview?.status ||
+    selectedCase?.status ||
+    normalizeStatus(
+      selectedAssessment?.action,
     );
 
-    return {
-      case_id: assessment.case_id,
-      action: assessment.action,
-      status: getStatus(assessment.case_id),
-      reason: getReason(assessment.case_id),
-      requires_human: assessment.requires_human,
-      finding: investigation?.finding,
-      risk: investigation?.risk,
-      evidence: investigation?.evidence,
-      recommendation: investigation?.recommendation,
-      confidence: investigation?.confidence,
-    };
-  });
+  const selectedRisk =
+    selectedCase?.risk ||
+    selectedInvestigation?.risk ||
+    selectedReview?.risk ||
+    verificationData?.risk ||
+    "NOT AVAILABLE";
 
-  // --------------------------------------------------
-  // RENDER
-  // --------------------------------------------------
+  const failureType =
+    verificationData
+      ?.reconciliation
+      ?.discrepancy_type ||
+    selectedEvidence
+      ?.discrepancy_type ||
+    verificationData
+      ?.control
+      ?.exception_code ||
+    "NOT SPECIFIED";
+
+  const reconciliationStatus =
+    verificationData
+      ?.reconciliation
+      ?.status ||
+    "NOT VERIFIED";
+
+  const reconciliationMessage =
+    verificationData
+      ?.reconciliation
+      ?.message ||
+    "No reconciliation message available.";
 
   return (
     <div className="app-shell">
@@ -257,7 +656,10 @@ function App() {
       <aside className="sidebar">
 
         <div className="brand">
-          <div className="brand-mark">F</div>
+
+          <div className="brand-mark">
+            F
+          </div>
 
           <div>
             <div className="brand-name">
@@ -268,15 +670,19 @@ function App() {
               Controller
             </div>
           </div>
+
         </div>
 
         <nav className="navigation">
 
           <button
             className={`nav-item ${
-              activeView === "overview" ? "active" : ""
+              activeView ===
+              "overview"
+                ? "active"
+                : ""
             }`}
-            onClick={() => setActiveView("overview")}
+            onClick={goOverview}
           >
             <span>◈</span>
             Overview
@@ -284,9 +690,14 @@ function App() {
 
           <button
             className={`nav-item ${
-              activeView === "controls" ? "active" : ""
+              activeView ===
+              "controls"
+                ? "active"
+                : ""
             }`}
-            onClick={() => setActiveView("controls")}
+            onClick={() =>
+              goControls("ALL")
+            }
           >
             <span>✓</span>
             Controls
@@ -294,28 +705,33 @@ function App() {
 
           <button
             className={`nav-item ${
-              activeView === "reviews" ? "active" : ""
+              activeView ===
+              "reviews"
+                ? "active"
+                : ""
             }`}
-            onClick={() => {
-              setActiveView("reviews");
-              handleLoadReviews();
-            }}
+            onClick={goReviews}
           >
             <span>!</span>
             Human Review
 
-            {summary.human_review > 0 && (
+            {openReviewCount >
+              0 && (
               <span className="nav-count">
-                {summary.human_review}
+                {openReviewCount}
               </span>
             )}
+
           </button>
 
           <button
             className={`nav-item ${
-              activeView === "audit" ? "active" : ""
+              activeView ===
+              "audit"
+                ? "active"
+                : ""
             }`}
-            onClick={() => setActiveView("audit")}
+            onClick={goAudit}
           >
             <span>▤</span>
             Audit Trail
@@ -326,21 +742,27 @@ function App() {
         <div className="sidebar-footer">
 
           <div className="system-status">
+
             <span className="status-dot" />
 
             <div>
+
               <strong>
-                {backendStatus === "Backend ready"
+                {backendStatus ===
+                "Backend ready"
                   ? "System operational"
                   : backendStatus}
               </strong>
 
               <small>
-                {backendStatus === "Backend ready"
+                {backendStatus ===
+                "Backend ready"
                   ? "Control engine online"
-                  : "Checking control engine"}
+                  : "Control engine unavailable"}
               </small>
+
             </div>
+
           </div>
 
           <div className="version">
@@ -358,6 +780,7 @@ function App() {
         <header className="topbar">
 
           <div>
+
             <div className="eyebrow">
               FINANCIAL CONTROL CENTER
             </div>
@@ -367,9 +790,12 @@ function App() {
             </h1>
 
             <p>
-              Autonomous financial investigation with deterministic
-              controls and human oversight.
+              Deterministic financial
+              controls with autonomous
+              investigation and human
+              oversight.
             </p>
+
           </div>
 
           <div className="topbar-actions">
@@ -381,8 +807,10 @@ function App() {
 
             <button
               className="run-button"
-              onClick={handleRunAgent}
               disabled={isRunning}
+              onClick={
+                handleRunAgent
+              }
             >
               {isRunning
                 ? "Running Agent..."
@@ -401,52 +829,91 @@ function App() {
           </div>
         )}
 
+        {successMessage && (
+          <div className="success-message">
+            {successMessage}
+          </div>
+        )}
+
         {/* OVERVIEW */}
 
-        {activeView === "overview" && (
+        {activeView ===
+          "overview" && (
           <>
 
             <section className="metrics-grid">
 
-              <div className="metric-card">
+              <button
+                className="metric-card metric-card-button"
+                onClick={() =>
+                  goControls("ALL")
+                }
+              >
+
                 <div className="metric-label">
                   CASES PROCESSED
                 </div>
 
                 <div className="metric-value">
-                  {agentData ? casesProcessed : "—"}
+                  {agentData
+                    ? casesProcessed
+                    : "—"}
                 </div>
 
                 <div className="metric-meta">
                   <span className="positive">
-                    {agentData ? "Live" : "Ready"}
+                    {agentData
+                      ? "Live"
+                      : "Ready"}
                   </span>
-                  Financial cases evaluated
-                </div>
-              </div>
 
-              <div className="metric-card success">
+                  Evaluated financial
+                  cases
+                </div>
+
+              </button>
+
+              <button
+                className="metric-card success metric-card-button"
+                onClick={() =>
+                  goControls("CLEAR")
+                }
+              >
 
                 <div className="metric-label">
                   AUTO CLEARED
                 </div>
 
                 <div className="metric-value">
-                  {agentData ? summary.clear : "—"}
+                  {agentData
+                    ? summary.clear
+                    : "—"}
                 </div>
 
                 <div className="metric-meta">
+
                   <span className="positive">
-                    {agentData
-                      ? `${clearPercentage}%`
+                    {agentData &&
+                    casesProcessed
+                      ? `${(
+                          (summary.clear /
+                            casesProcessed) *
+                          100
+                        ).toFixed(1)}%`
                       : "—"}
                   </span>
-                  Passed controls automatically
+
+                  Passed controls
+                  automatically
+
                 </div>
 
-              </div>
+              </button>
 
-              <div className="metric-card warning">
+              <button
+                className="metric-card warning metric-card-button"
+                onClick={goReviews}
+              >
 
                 <div className="metric-label">
                   HUMAN REVIEW
@@ -454,22 +921,32 @@ function App() {
 
                 <div className="metric-value">
                   {agentData
-                    ? summary.human_review
+                    ? openReviewCount
                     : "—"}
                 </div>
 
                 <div className="metric-meta">
+
                   <span className="warning-text">
-                    {agentData
+                    {openReviewCount >
+                    0
                       ? "Attention"
-                      : "Waiting"}
+                      : "Clear"}
                   </span>
-                  Requires reviewer investigation
+
+                  Open cases awaiting
+                  review
+
                 </div>
 
-              </div>
+              </button>
 
-              <div className="metric-card critical">
+              <button
+                className="metric-card critical metric-card-button"
+                onClick={() =>
+                  goControls("BLOCKED")
+                }
+              >
 
                 <div className="metric-label">
                   BLOCKED
@@ -482,40 +959,50 @@ function App() {
                 </div>
 
                 <div className="metric-meta">
-                  <span className="positive">
-                    {agentData
-                      ? `${blockedPercentage}%`
+
+                  <span className="warning-text">
+                    {agentData &&
+                    casesProcessed
+                      ? `${(
+                          (summary.blocked /
+                            casesProcessed) *
+                          100
+                        ).toFixed(1)}%`
                       : "—"}
                   </span>
-                  Cases stopped by policy
+
+                  Stopped by control
+                  policy
+
                 </div>
 
-              </div>
+              </button>
 
             </section>
 
             <section className="dashboard-grid">
 
-              {/* CONTROL RESULTS */}
-
-              <div className="panel control-panel">
+              <div className="panel">
 
                 <div className="panel-header">
 
                   <div>
+
                     <h2>
                       Agent Assessments
                     </h2>
 
                     <p>
-                      Latest financial control decisions
+                      Latest financial
+                      control outcomes
                     </p>
+
                   </div>
 
                   <button
                     className="text-button"
                     onClick={() =>
-                      setActiveView("controls")
+                      goControls("ALL")
                     }
                   >
                     View all →
@@ -528,65 +1015,70 @@ function App() {
                   <table>
 
                     <thead>
+
                       <tr>
                         <th>CASE</th>
-                        <th>ACTION</th>
-                        <th>REQUIREMENT</th>
-                        <th>REASON</th>
+                        <th>STATUS</th>
+                        <th>RISK</th>
+                        <th>WHY</th>
                       </tr>
+
                     </thead>
 
                     <tbody>
 
-                      {displayedCases
+                      {allCases
                         .slice(0, 8)
-                        .map((item) => (
+                        .map(
+                          (item) => (
+                            <tr
+                              key={
+                                item.case_id
+                              }
+                              onClick={() =>
+                                openCase(
+                                  item,
+                                )
+                              }
+                            >
 
-                          <tr
-                            key={item.case_id}
-                            onClick={() =>
-                              openCase(item)
-                            }
-                          >
+                              <td>
+                                <strong>
+                                  {
+                                    item.case_id
+                                  }
+                                </strong>
+                              </td>
 
-                            <td>
-                              <strong>
-                                {item.case_id}
-                              </strong>
-                            </td>
+                              <td>
+                                <StatusBadge
+                                  status={
+                                    item.status
+                                  }
+                                />
+                              </td>
 
-                            <td>
-                              <span
-                                className={`status-badge ${item.status
-                                  .toLowerCase()
-                                  .replace("_", "-")}`}
-                              >
-                                {item.status.replace(
-                                  "_",
-                                  " ",
-                                )}
-                              </span>
-                            </td>
+                              <td>
+                                {item.risk ||
+                                  "—"}
+                              </td>
 
-                            <td>
-                              {item.requires_human
-                                ? "Human"
-                                : "Automatic"}
-                            </td>
+                              <td>
+                                {
+                                  item.reason
+                                }
+                              </td>
 
-                            <td>
-                              {item.reason}
-                            </td>
-
-                          </tr>
-
-                        ))}
+                            </tr>
+                          ),
+                        )}
 
                       {!agentData && (
                         <tr>
                           <td colSpan="4">
-                            Run the agent to evaluate
-                            financial cases.
+                            Run the agent
+                            to begin
+                            evaluation.
                           </td>
                         </tr>
                       )}
@@ -599,20 +1091,21 @@ function App() {
 
               </div>
 
-              {/* PIPELINE */}
-
-              <div className="panel activity-panel">
+              <div className="panel">
 
                 <div className="panel-header">
 
                   <div>
+
                     <h2>
-                      Agent Pipeline
+                      Control Pipeline
                     </h2>
 
                     <p>
-                      Current workflow distribution
+                      Current operational
+                      posture
                     </p>
+
                   </div>
 
                 </div>
@@ -622,19 +1115,23 @@ function App() {
                   <div className="pipeline-row">
 
                     <div className="pipeline-title">
+
                       <span className="pipeline-icon clear">
                         ✓
                       </span>
 
                       <div>
+
                         <strong>
                           Auto Clear
                         </strong>
 
                         <small>
-                          Deterministic controls passed
+                          Controls passed
                         </small>
+
                       </div>
+
                     </div>
 
                     <strong>
@@ -646,16 +1143,23 @@ function App() {
                   </div>
 
                   <div className="progress-track">
+
                     <div
                       className="progress-fill"
                       style={{
                         width: `${
-                          agentData
-                            ? clearPercentage
+                          agentData &&
+                          casesProcessed
+                            ? (
+                                (summary.clear /
+                                  casesProcessed) *
+                                100
+                              )
                             : 0
                         }%`,
                       }}
                     />
+
                   </div>
 
                   <div className="pipeline-row">
@@ -667,20 +1171,22 @@ function App() {
                       </span>
 
                       <div>
+
                         <strong>
                           Human Review
                         </strong>
 
                         <small>
-                          Agent escalations
+                          Open exceptions
                         </small>
+
                       </div>
 
                     </div>
 
                     <strong>
                       {agentData
-                        ? summary.human_review
+                        ? openReviewCount
                         : "—"}
                     </strong>
 
@@ -692,8 +1198,13 @@ function App() {
                       className="progress-fill review-fill"
                       style={{
                         width: `${
-                          agentData
-                            ? reviewPercentage
+                          agentData &&
+                          casesProcessed
+                            ? (
+                                (summary.human_review /
+                                  casesProcessed) *
+                                100
+                              )
                             : 0
                         }%`,
                       }}
@@ -710,13 +1221,16 @@ function App() {
                       </span>
 
                       <div>
+
                         <strong>
                           Blocked
                         </strong>
 
                         <small>
-                          Stopped by control policy
+                          Policy-stopped
+                          cases
                         </small>
+
                       </div>
 
                     </div>
@@ -740,79 +1254,19 @@ function App() {
                   <div>
 
                     <strong>
-                      {agentData
-                        ? "Agent investigation completed"
-                        : "Agent ready"}
+                      Agent control posture
                     </strong>
 
                     <p>
-                      {agentData
-                        ? `Evaluated ${casesProcessed} financial cases and routed exceptions for appropriate action.`
-                        : "Run the agent to begin the financial control workflow."}
+                      Deterministic controls
+                      remain authoritative.
+                      The agent investigates
+                      exceptions and routes
+                      them to the appropriate
+                      workflow.
                     </p>
 
                   </div>
-
-                </div>
-
-              </div>
-
-            </section>
-
-            <section className="panel review-panel">
-
-              <div className="panel-header">
-
-                <div>
-
-                  <h2>
-                    Human Review Queue
-                  </h2>
-
-                  <p>
-                    Exceptions requiring human investigation
-                  </p>
-
-                </div>
-
-                <button
-                  className="review-button"
-                  onClick={() => {
-                    setActiveView("reviews");
-                    handleLoadReviews();
-                  }}
-                >
-                  Open Review Queue →
-                </button>
-
-              </div>
-
-              <div className="review-summary">
-
-                <div className="review-summary-number">
-                  {agentData
-                    ? summary.human_review
-                    : "—"}
-                </div>
-
-                <div>
-
-                  <strong>
-                    Cases require human attention
-                  </strong>
-
-                  <p>
-                    The agent has identified exceptions
-                    that cannot be resolved automatically.
-                  </p>
-
-                </div>
-
-                <div className="review-rule">
-
-                  <span className="status-dot warning-dot" />
-
-                  Human decision required
 
                 </div>
 
@@ -825,31 +1279,80 @@ function App() {
 
         {/* CONTROLS */}
 
-        {activeView === "controls" && (
-
+        {activeView ===
+          "controls" && (
           <section className="panel page-panel">
 
             <div className="panel-header">
 
               <div>
+
+                <div className="eyebrow">
+                  CONTROL WORKBENCH
+                </div>
+
                 <h2>
-                  Agent Control Assessments
+                  Financial Control
+                  Assessments
                 </h2>
 
                 <p>
-                  Decisions produced by the FeeFlow agent
+                  Filter by outcome and
+                  select any case for full
+                  verification evidence.
                 </p>
+
               </div>
 
-              <button
-                className="run-button"
-                onClick={handleRunAgent}
-                disabled={isRunning}
-              >
-                {isRunning
-                  ? "Running..."
-                  : "Run Agent"}
-              </button>
+              <div className="review-header-actions">
+
+                <button
+                  className="text-button"
+                  onClick={
+                    goOverview
+                  }
+                >
+                  ← Overview
+                </button>
+
+                <button
+                  className="run-button"
+                  disabled={isRunning}
+                  onClick={
+                    handleRunAgent
+                  }
+                >
+                  {isRunning
+                    ? "Running..."
+                    : "Run Agent"}
+                </button>
+
+              </div>
+
+            </div>
+
+            <div className="filter-row">
+
+              {FILTERS.map(
+                (filter) => (
+                  <button
+                    key={filter}
+                    className={`filter-button ${
+                      statusFilter ===
+                      filter
+                        ? "active"
+                        : ""
+                    }`}
+                    onClick={() =>
+                      setStatusFilter(
+                        filter,
+                      )
+                    }
+                  >
+                    {pretty(filter)}
+                  </button>
+                ),
+              )}
 
             </div>
 
@@ -858,48 +1361,74 @@ function App() {
               <table>
 
                 <thead>
+
                   <tr>
                     <th>CASE</th>
-                    <th>ACTION</th>
-                    <th>HUMAN REQUIRED</th>
-                    <th>REASON</th>
+                    <th>STATUS</th>
+                    <th>RISK</th>
+                    <th>HUMAN</th>
+                    <th>EXCEPTION</th>
                   </tr>
+
                 </thead>
 
                 <tbody>
 
-                  {displayedCases.map((item) => (
+                  {filteredCases.map(
+                    (item) => (
+                      <tr
+                        key={item.case_id}
+                        onClick={() =>
+                          openCase(
+                            item,
+                          )
+                        }
+                      >
 
-                    <tr
-                      key={item.case_id}
-                      onClick={() =>
-                        openCase(item)
-                      }
-                    >
+                        <td>
+                          <strong>
+                            {
+                              item.case_id
+                            }
+                          </strong>
+                        </td>
 
-                      <td>
-                        <strong>
-                          {item.case_id}
-                        </strong>
+                        <td>
+                          <StatusBadge
+                            status={
+                              item.status
+                            }
+                          />
+                        </td>
+
+                        <td>
+                          {item.risk ||
+                            "—"}
+                        </td>
+
+                        <td>
+                          {item.requires_human
+                            ? "YES"
+                            : "NO"}
+                        </td>
+
+                        <td>
+                          {item.reason}
+                        </td>
+
+                      </tr>
+                    ),
+                  )}
+
+                  {filteredCases.length ===
+                    0 && (
+                    <tr>
+                      <td colSpan="5">
+                        No cases match the
+                        selected filter.
                       </td>
-
-                      <td>
-                        {item.status}
-                      </td>
-
-                      <td>
-                        {item.requires_human
-                          ? "YES"
-                          : "NO"}
-                      </td>
-
-                      <td>
-                        {item.reason}
-                      </td>
-
                     </tr>
-
-                  ))}
+                  )}
 
                 </tbody>
 
@@ -908,184 +1437,394 @@ function App() {
             </div>
 
           </section>
-
         )}
 
         {/* HUMAN REVIEW */}
 
-        {activeView === "reviews" && (
-
+        {activeView ===
+          "reviews" && (
           <section className="panel page-panel">
 
             <div className="panel-header">
 
               <div>
+
+                <div className="eyebrow">
+                  REVIEW OPERATIONS
+                </div>
+
                 <h2>
                   Human Review Queue
                 </h2>
 
                 <p>
-                  Agent escalations awaiting human decision
+                  Active cases requiring a
+                  human workflow decision.
                 </p>
+
               </div>
 
-              <button
-                className="review-button"
-                onClick={handleLoadReviews}
-                disabled={isLoadingReviews}
-              >
-                {isLoadingReviews
-                  ? "Loading..."
-                  : "Refresh Queue"}
-              </button>
-
-            </div>
-
-            <div className="review-list">
-
-              {reviewCases.length === 0 && (
-
-                <div className="empty-state">
-                  No review cases currently available.
-                </div>
-
-              )}
-
-              {reviewCases.map((reviewCase) => (
+              <div className="review-header-actions">
 
                 <button
-                  key={reviewCase.case_id}
-                  className="review-item"
-                  onClick={() =>
-                    openCase(reviewCase)
+                  className="text-button"
+                  onClick={
+                    goOverview
                   }
                 >
-
-                  <div>
-
-                    <strong>
-                      {reviewCase.case_id}
-                    </strong>
-
-                    <p>
-                      {reviewCase.finding ||
-                        reviewCase.explanation ||
-                        "Investigation available"}
-                    </p>
-
-                  </div>
-
-                  <span>
-                    {reviewCase.status ||
-                      "PENDING"}
-                  </span>
-
+                  ← Overview
                 </button>
 
-              ))}
+                <button
+                  className="review-button"
+                  disabled={
+                    isLoadingReviews
+                  }
+                  onClick={
+                    refreshReviews
+                  }
+                >
+                  {isLoadingReviews
+                    ? "Refreshing..."
+                    : "Refresh Queue"}
+                </button>
+
+              </div>
 
             </div>
 
-          </section>
+            <div className="review-summary">
 
+              <div className="review-summary-number">
+                {openReviewCount}
+              </div>
+
+              <div>
+
+                <strong>
+                  Open review cases
+                </strong>
+
+                <p>
+                  Resolved cases leave
+                  this active queue but
+                  remain in server-side
+                  audit history.
+                </p>
+
+              </div>
+
+              <div className="review-rule">
+
+                <span className="status-dot warning-dot" />
+
+                Human action required
+
+              </div>
+
+            </div>
+
+            {reviewCases.length ===
+            0 ? (
+              <div className="empty-state">
+                No open review cases
+                currently available.
+              </div>
+            ) : (
+              <div className="review-list">
+
+                {reviewCases.map(
+                  (item) => (
+                    <button
+                      key={item.case_id}
+                      className="review-item"
+                      onClick={() =>
+                        openCase(item)
+                      }
+                    >
+
+                      <div>
+
+                        <strong>
+                          {
+                            item.case_id
+                          }
+                        </strong>
+
+                        <p>
+                          {item.finding ||
+                            item.explanation ||
+                            "Financial exception requires review."}
+                        </p>
+
+                      </div>
+
+                      <StatusBadge
+                        status={
+                          item.status
+                        }
+                      />
+
+                    </button>
+                  ),
+                )}
+
+              </div>
+            )}
+
+          </section>
         )}
 
         {/* AUDIT */}
 
-        {activeView === "audit" && (
-
+        {activeView ===
+          "audit" && (
           <section className="panel page-panel">
 
             <div className="panel-header">
 
               <div>
+
+                <div className="eyebrow">
+                  CONTROL EVIDENCE
+                </div>
+
                 <h2>
                   Audit Trail
                 </h2>
 
                 <p>
-                  Evidence of agent decisions and control execution
+                  Persisted control and human
+                  workflow events, newest first.
                 </p>
+
               </div>
+
+              <div className="review-header-actions">
+
+                <button
+                  className="text-button"
+                  onClick={
+                    goOverview
+                  }
+                >
+                  ← Overview
+                </button>
+
+                <button
+                  className="review-button"
+                  disabled={
+                    isLoadingAudit
+                  }
+                  onClick={
+                    refreshAudit
+                  }
+                >
+                  {isLoadingAudit
+                    ? "Refreshing..."
+                    : "Refresh Audit"}
+                </button>
+
+              </div>
+
             </div>
 
-            <div className="table-wrapper">
+            <div className="audit-callout">
 
-              <table>
+              <strong>
+                Where is a decision stored?
+              </strong>
 
-                <thead>
-                  <tr>
-                    <th>CASE</th>
-                    <th>ACTION</th>
-                    <th>SEVERITY</th>
-                    <th>EXCEPTION</th>
-                  </tr>
-                </thead>
+              <p>
+                Agent control events and
+                human-review decisions are
+                persisted by the server-side
+                FeeFlow run store. A human
+                decision is recorded as a
+                separate audit event with the
+                case ID, reviewer, decision,
+                reason and timestamp. The
+                underlying financial transaction
+                is not modified.
+              </p>
 
-                <tbody>
+            </div>
 
-                  {auditRecords.map(
-                    (record, index) => (
+            <div className="audit-stat-grid">
 
-                      <tr key={index}>
+              <div className="audit-stat">
 
-                        <td>
-                          {record.case_id ||
-                            record.assessment_id ||
-                            "—"}
-                        </td>
+                <span>
+                  TOTAL EVENTS
+                </span>
 
-                        <td>
-                          {record.control_action ||
-                            record.action ||
-                            "—"}
-                        </td>
+                <strong>
+                  {auditRecords.length}
+                </strong>
 
-                        <td>
-                          {record.severity ||
-                            "—"}
-                        </td>
+              </div>
 
-                        <td>
-                          {record.exception_code ||
-                            "None"}
-                        </td>
+              <div className="audit-stat">
 
-                      </tr>
+                <span>
+                  RECENT EVENTS
+                </span>
 
-                    ),
+                <strong>
+                  {Math.min(
+                    8,
+                    auditRecords.length,
                   )}
+                </strong>
 
-                  {auditRecords.length === 0 && (
+              </div>
+
+              <div className="audit-stat">
+
+                <span>
+                  HUMAN DECISIONS
+                </span>
+
+                <strong>
+                  {
+                    auditRecords.filter(
+                      (record) =>
+                        record?.event ===
+                        "HUMAN_REVIEW_DECISION",
+                    ).length
+                  }
+                </strong>
+
+              </div>
+
+              <div className="audit-stat">
+
+                <span>
+                  STORAGE
+                </span>
+
+                <strong>
+                  Server-side Run Store
+                </strong>
+
+              </div>
+
+            </div>
+
+            <div className="panel">
+
+              <div className="panel-header">
+
+                <div>
+
+                  <h2>
+                    Recent Audit Activity
+                  </h2>
+
+                  <p>
+                    Newest persisted events
+                    first
+                  </p>
+
+                </div>
+
+              </div>
+
+              <div className="table-wrapper">
+
+                <table>
+
+                  <thead>
 
                     <tr>
-                      <td colSpan="4">
-                        Run the agent to generate
-                        audit records.
-                      </td>
+                      <th>TIME</th>
+                      <th>CASE</th>
+                      <th>EVENT</th>
+                      <th>ACTION</th>
+                      <th>DETAIL</th>
                     </tr>
 
-                  )}
+                  </thead>
 
-                </tbody>
+                  <tbody>
 
-              </table>
+                    {auditRecords
+                      .slice(0, 8)
+                      .map(
+                        (
+                          record,
+                          index,
+                        ) => (
+                          <tr
+                            key={`${record?.case_id || "audit"}-${record?.timestamp || index}-${index}`}
+                          >
+
+                            <td>
+                              {formatDate(
+                                record?.timestamp,
+                              )}
+                            </td>
+
+                            <td>
+                              <strong>
+                                {record?.case_id ||
+                                  "—"}
+                              </strong>
+                            </td>
+
+                            <td>
+                              {pretty(
+                                record?.event ||
+                                  "CONTROL_ASSESSMENT",
+                              )}
+                            </td>
+
+                            <td>
+                              {pretty(
+                                record?.decision ||
+                                  record?.agent_action ||
+                                  record?.control_action ||
+                                  "RECORDED",
+                              )}
+                            </td>
+
+                            <td>
+                              {record?.reason ||
+                                record?.message ||
+                                "Audit event recorded."}
+                            </td>
+
+                          </tr>
+                        ),
+                      )}
+
+                    {auditRecords.length ===
+                      0 && (
+                      <tr>
+                        <td colSpan="5">
+                          No audit events
+                          available.
+                        </td>
+                      </tr>
+                    )}
+
+                  </tbody>
+
+                </table>
+
+              </div>
 
             </div>
 
           </section>
-
         )}
 
         {/* CASE MODAL */}
 
         {selectedCase && (
-
           <div
             className="case-overlay"
-            onClick={() =>
-              setSelectedCase(null)
-            }
+            onClick={closeCase}
           >
 
             <div
@@ -1100,20 +1839,24 @@ function App() {
                 <div>
 
                   <div className="eyebrow">
-                    AGENT CASE
+                    FINANCIAL CASE
                   </div>
 
                   <h2>
                     {selectedCase.case_id}
                   </h2>
 
+                  <p>
+                    Deterministic verification,
+                    reconciliation and review
+                    history.
+                  </p>
+
                 </div>
 
                 <button
                   className="close-button"
-                  onClick={() =>
-                    setSelectedCase(null)
-                  }
+                  onClick={closeCase}
                 >
                   ×
                 </button>
@@ -1123,39 +1866,33 @@ function App() {
               <div className="case-details">
 
                 <div>
-                  <span>Status</span>
+                  <span>
+                    STATUS
+                  </span>
 
                   <strong>
-                    {selectedCase.status ||
-                      selectedCase.action ||
-                      "—"}
+                    <StatusBadge
+                      status={
+                        currentSelectedStatus
+                      }
+                    />
                   </strong>
                 </div>
 
                 <div>
-                  <span>Risk</span>
+                  <span>
+                    RISK
+                  </span>
 
                   <strong>
-                    {selectedCase.risk ||
-                      "Not available"}
+                    {selectedRisk}
                   </strong>
                 </div>
 
                 <div>
-                  <span>Confidence</span>
-
-                  <strong>
-                    {selectedCase.confidence != null
-                      ? `${(
-                          selectedCase.confidence *
-                          100
-                        ).toFixed(0)}%`
-                      : "Not available"}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Human Required</span>
+                  <span>
+                    HUMAN REQUIRED
+                  </span>
 
                   <strong>
                     {selectedCase.requires_human
@@ -1164,109 +1901,470 @@ function App() {
                   </strong>
                 </div>
 
+                <div>
+                  <span>
+                    CONFIDENCE
+                  </span>
+
+                  <strong>
+                    {selectedCase.confidence !=
+                    null
+                      ? `${(
+                          selectedCase.confidence *
+                          100
+                        ).toFixed(0)}%`
+                      : "—"}
+                  </strong>
+                </div>
+
+              </div>
+
+              {isVerifying && (
+                <div className="evidence-box">
+
+                  <span>
+                    LIVE VERIFICATION
+                  </span>
+
+                  <p>
+                    Rechecking the financial
+                    control path for this
+                    case...
+                  </p>
+
+                </div>
+              )}
+
+              <div className="evidence-box">
+
+                <span>
+                  WHAT HAPPENED
+                </span>
+
+                <p>
+                  {selectedInvestigation?.finding ||
+                    selectedReview?.finding ||
+                    selectedCase.reason}
+                </p>
+
+                <p>
+                  {selectedInvestigation?.explanation ||
+                    selectedReview?.explanation ||
+                    selectedCase.reason}
+                </p>
+
               </div>
 
               <div className="evidence-box">
 
                 <span>
-                  AGENT FINDING
+                  WHERE THE CONTROL FAILED
                 </span>
 
+                <div className="pipeline">
+
+                  <div className="pipeline-row">
+
+                    <div className="pipeline-title">
+
+                      <span className="pipeline-icon clear">
+                        1
+                      </span>
+
+                      <div>
+
+                        <strong>
+                          Fee Ledger → Gateway
+                        </strong>
+
+                        <small>
+                          Expected amount versus
+                          gateway observation
+                        </small>
+
+                      </div>
+
+                    </div>
+
+                    <strong>
+                      {selectedEvidence
+                        ?.failed_stage ===
+                      "FEE_LEDGER_TO_PAYMENT_GATEWAY"
+                        ? "EXCEPTION"
+                        : "PASS"}
+                    </strong>
+
+                  </div>
+
+                  <div className="pipeline-row">
+
+                    <div className="pipeline-title">
+
+                      <span className="pipeline-icon review">
+                        2
+                      </span>
+
+                      <div>
+
+                        <strong>
+                          Gateway → Settlement
+                        </strong>
+
+                        <small>
+                          Transaction identity and
+                          settlement consistency
+                        </small>
+
+                      </div>
+
+                    </div>
+
+                    <strong>
+                      {selectedEvidence
+                          ?.failed_stage ===
+                        "EXPECTED_AMOUNT_TO_SETTLEMENT" ||
+                      selectedEvidence
+                          ?.failed_stage ===
+                        "PAYMENT_GATEWAY_TO_SETTLEMENT" ||
+                      selectedEvidence
+                          ?.failed_stage ===
+                        "PAYMENT_GATEWAY_TO_SETTLEMENT_IDENTITY"
+                        ? "EXCEPTION"
+                        : "PASS"}
+                    </strong>
+
+                  </div>
+
+                  <div className="pipeline-row">
+
+                    <div className="pipeline-title">
+
+                      <span className="pipeline-icon blocked">
+                        3
+                      </span>
+
+                      <div>
+
+                        <strong>
+                          Settlement → Bank
+                        </strong>
+
+                        <small>
+                          Settlement identity,
+                          amount and reference
+                        </small>
+
+                      </div>
+
+                    </div>
+
+                    <strong>
+                      {selectedEvidence
+                        ?.failed_stage?.startsWith(
+                          "SETTLEMENT_TO_BANK",
+                        ) ||
+                      selectedEvidence
+                        ?.failed_stage ===
+                        "BANK_REFERENCE_UNIQUENESS" ||
+                      selectedEvidence
+                        ?.failed_stage ===
+                        "SETTLEMENT_TO_BANK_IDENTITY" ||
+                      selectedEvidence
+                        ?.failed_stage ===
+                        "SETTLEMENT_TO_BANK_AMOUNT"
+                        ? "EXCEPTION"
+                        : "PASS"}
+                    </strong>
+
+                  </div>
+
+                </div>
+
                 <p>
-                  {selectedCase.finding ||
-                    selectedCase.reason ||
-                    selectedCase.explanation ||
-                    "No finding available."}
+                  <strong>
+                    Failure type:
+                  </strong>{" "}
+                  {failureType}
+                </p>
+
+                <p>
+                  <strong>
+                    Reconciliation:
+                  </strong>{" "}
+                  {reconciliationMessage}
+                </p>
+
+                <p>
+                  <strong>
+                    Verification status:
+                  </strong>{" "}
+                  {reconciliationStatus}
                 </p>
 
               </div>
 
-              {selectedCase.evidence && (
+              <div className="evidence-box">
 
-                <div className="evidence-box">
+                <span>
+                  FINANCIAL COMPARISON
+                </span>
 
-                  <span>
-                    EVIDENCE
-                  </span>
+                <div className="amount-comparison">
 
+                  <div className="amount-card">
+
+                    <span>
+                      EXPECTED
+                    </span>
+
+                    <strong>
+                      {formatMoney(
+                        expectedAmount,
+                        currency,
+                      )}
+                    </strong>
+
+                  </div>
+
+                  <div className="amount-card">
+
+                    <span>
+                      OBSERVED
+                    </span>
+
+                    <strong>
+                      {formatMoney(
+                        observedAmount,
+                        currency,
+                      )}
+                    </strong>
+
+                  </div>
+
+                  <div className="amount-card">
+
+                    <span>
+                      DIFFERENCE
+                    </span>
+
+                    <strong>
+                      {formatMoney(
+                        difference,
+                        currency,
+                      )}
+                    </strong>
+
+                  </div>
+
+                </div>
+
+              </div>
+
+              <div className="evidence-box">
+
+                <span>
+                  RECONCILIATION EVIDENCE
+                </span>
+
+                {selectedEvidence ? (
                   <pre>
                     {JSON.stringify(
-                      selectedCase.evidence,
+                      selectedEvidence,
                       null,
                       2,
                     )}
                   </pre>
+                ) : (
+                  <p>
+                    No structured evidence
+                    available.
+                  </p>
+                )}
 
-                </div>
+              </div>
 
-              )}
+              <div className="evidence-box">
 
-              {selectedCase.requires_human && (
+                <span>
+                  AGENT RECOMMENDATION
+                </span>
+
+                <p>
+                  {selectedCase.recommendation ||
+                    selectedInvestigation?.recommendation ||
+                    "Human investigation required."}
+                </p>
+
+                <p>
+                  FeeFlow is a control and
+                  investigation layer. It does
+                  not execute, release or modify
+                  the underlying financial
+                  transaction.
+                </p>
+
+              </div>
+
+              <div className="evidence-box">
+
+                <span>
+                  CASE AUDIT HISTORY
+                </span>
+
+                {caseHistory.length >
+                0 ? (
+                  <div className="review-list">
+
+                    {caseHistory
+                      .slice(0, 8)
+                      .map(
+                        (
+                          record,
+                          index,
+                        ) => (
+                          <div
+                            className="review-item"
+                            key={`${selectedId}-history-${index}`}
+                          >
+
+                            <div>
+
+                              <strong>
+                                {pretty(
+                                  record?.event,
+                                )}
+                              </strong>
+
+                              <p>
+                                {record?.reason ||
+                                  record?.message ||
+                                  "Audit event recorded."}
+                              </p>
+
+                              <small>
+                                {formatDate(
+                                  record?.timestamp,
+                                )}
+                              </small>
+
+                            </div>
+
+                            <span>
+                              {pretty(
+                                record?.decision ||
+                                  record?.agent_action ||
+                                  record?.control_action ||
+                                  "RECORDED",
+                              )}
+                            </span>
+
+                          </div>
+                        ),
+                      )}
+
+                  </div>
+                ) : (
+                  <p>
+                    No additional audit
+                    history for this case.
+                  </p>
+                )}
+
+              </div>
+
+              {selectedCase.requires_human &&
+                normalizeStatus(
+                  selectedReview?.status ||
+                    selectedCase.status,
+                ) !==
+                  "RESOLVED" && (
 
                 <div className="modal-actions">
 
-                  <select
-                    value={decision}
-                    onChange={(event) =>
-                      setDecision(
-                        event.target.value,
-                      )
-                    }
-                  >
-                    <option value="">
-                      Select decision
-                    </option>
+                  <div className="evidence-box">
 
-                    <option value="APPROVE">
-                      Approve
-                    </option>
+                    <span>
+                      HUMAN ACTION REQUIRED
+                    </span>
 
-                    <option value="REJECT">
-                      Reject
-                    </option>
+                    <p>
+                      Record an explicit
+                      workflow decision with
+                      reviewer identity and an
+                      auditable reason.
+                    </p>
 
-                    <option value="ESCALATE">
-                      Escalate
-                    </option>
+                    <select
+                      value={decision}
+                      onChange={(event) =>
+                        setDecision(
+                          event.target.value,
+                        )
+                      }
+                    >
 
-                  </select>
+                      <option value="">
+                        Select decision
+                      </option>
 
-                  <input
-                    value={reviewer}
-                    onChange={(event) =>
-                      setReviewer(
-                        event.target.value,
-                      )
-                    }
-                    placeholder="Reviewer"
-                  />
+                      {DECISIONS.map(
+                        (item) => (
+                          <option
+                            key={item}
+                            value={item}
+                          >
+                            {pretty(item)}
+                          </option>
+                        ),
+                      )}
 
-                  <textarea
-                    value={decisionReason}
-                    onChange={(event) =>
-                      setDecisionReason(
-                        event.target.value,
-                      )
-                    }
-                    placeholder="Decision reason"
-                  />
+                    </select>
 
-                  <button
-                    className="primary-button"
-                    disabled={!decision}
-                    onClick={handleDecision}
-                  >
-                    Submit Decision
-                  </button>
+                    <input
+                      value={reviewer}
+                      onChange={(event) =>
+                        setReviewer(
+                          event.target.value,
+                        )
+                      }
+                      placeholder="Reviewer identity"
+                    />
+
+                    <textarea
+                      value={decisionReason}
+                      onChange={(event) =>
+                        setDecisionReason(
+                          event.target.value,
+                        )
+                      }
+                      placeholder="Why was this decision made and what should happen next?"
+                    />
+
+                    <button
+                      className="primary-button"
+                      disabled={
+                        isSubmittingDecision ||
+                        !decision ||
+                        !decisionReason.trim() ||
+                        !reviewer.trim()
+                      }
+                      onClick={
+                        handleDecision
+                      }
+                    >
+                      {isSubmittingDecision
+                        ? "Recording..."
+                        : "Record Human Decision"}
+                    </button>
+
+                  </div>
 
                 </div>
-
               )}
 
             </div>
 
           </div>
-
         )}
 
       </main>

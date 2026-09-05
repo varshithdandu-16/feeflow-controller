@@ -16,7 +16,7 @@ class Action(str, Enum):
     BLOCK = "BLOCK"
 
 
-@dataclass
+@dataclass(frozen=True)
 class ControlDecision:
     case_id: str
     status: str
@@ -30,62 +30,73 @@ EXCEPTION_RULES = {
     "GATEWAY_AMOUNT_MISMATCH": {
         "severity": Severity.HIGH,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Gateway amount differs from the expected transaction amount.",
+        "reason":
+            "Gateway amount differs from the expected "
+            "transaction amount.",
     },
     "SETTLEMENT_AMOUNT_MISMATCH": {
         "severity": Severity.HIGH,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Settlement amount differs from the expected transaction amount.",
+        "reason":
+            "Settlement amount differs from the expected amount.",
     },
     "BANK_AMOUNT_MISMATCH": {
         "severity": Severity.CRITICAL,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Bank-posted amount does not match the expected settlement amount.",
+        "reason":
+            "Bank-posted amount does not match the "
+            "expected settlement amount.",
     },
     "MISSING_GATEWAY_RECORD": {
         "severity": Severity.HIGH,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Expected gateway transaction record is missing.",
+        "reason":
+            "Expected gateway transaction record is missing.",
     },
     "MISSING_SETTLEMENT_RECORD": {
         "severity": Severity.HIGH,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Expected settlement record is missing.",
+        "reason":
+            "Expected settlement record is missing.",
     },
     "MISSING_BANK_RECORD": {
         "severity": Severity.CRITICAL,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Expected bank posting record is missing.",
+        "reason":
+            "Expected bank posting record is missing.",
     },
     "INVALID_PROCESSOR_STATUS": {
         "severity": Severity.MEDIUM,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Processor status is outside the approved state set.",
+        "reason":
+            "Processor status is outside the approved state set.",
     },
     "DUPLICATE_BANK_REFERENCE": {
         "severity": Severity.CRITICAL,
         "action": Action.BLOCK,
-        "reason": "Duplicate bank reference detected.",
+        "reason":
+            "Duplicate bank reference detected across "
+            "multiple transactions.",
     },
     "CURRENCY_MISMATCH": {
         "severity": Severity.MEDIUM,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Currency differs between financial sources.",
+        "reason":
+            "Currency differs between financial sources.",
     },
-    "GATEWAY_FEE_ID_MISMATCH": {
+    "GATEWAY_SETTLEMENT_ID_MISMATCH": {
         "severity": Severity.HIGH,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Gateway transaction is linked to a different fee record.",
+        "reason":
+            "Settlement references a different "
+            "gateway transaction.",
     },
-    "SETTLEMENT_GATEWAY_ID_MISMATCH": {
-        "severity": Severity.HIGH,
-        "action": Action.HUMAN_REVIEW,
-        "reason": "Settlement record references a different gateway transaction.",
-    },
-    "BANK_SETTLEMENT_ID_MISMATCH": {
+    "SETTLEMENT_BANK_ID_MISMATCH": {
         "severity": Severity.CRITICAL,
         "action": Action.HUMAN_REVIEW,
-        "reason": "Bank statement entry references a different settlement record.",
+        "reason":
+            "Bank statement references a different "
+            "settlement record.",
     },
 }
 
@@ -95,34 +106,48 @@ def evaluate_case(
     status: str,
     exception_code: str,
 ) -> ControlDecision:
-    """Apply deterministic control policy to one reconciliation finding."""
+    normalized_status = str(status).upper()
+    normalized_exception = str(
+        exception_code or "NONE"
+    ).upper()
 
-    if status in {"PASS", "MATCHED"} and exception_code in {"NONE", ""}:
+    if (
+        normalized_status in {
+            "PASS",
+            "MATCHED",
+        }
+        and normalized_exception == "NONE"
+    ):
         return ControlDecision(
             case_id=case_id,
-            status=status,
+            status=normalized_status,
             exception_code="NONE",
             severity=Severity.LOW,
             action=Action.AUTO_CLEAR,
-            reason="All reconciliation controls passed.",
+            reason=
+                "All reconciliation controls passed.",
         )
 
-    rule = EXCEPTION_RULES.get(exception_code)
+    rule = EXCEPTION_RULES.get(
+        normalized_exception
+    )
 
     if rule is None:
         return ControlDecision(
             case_id=case_id,
-            status=status,
-            exception_code=exception_code,
+            status=normalized_status,
+            exception_code=normalized_exception,
             severity=Severity.HIGH,
             action=Action.HUMAN_REVIEW,
-            reason="Unknown exception requires manual investigation.",
+            reason=
+                "Unknown exception requires "
+                "manual investigation.",
         )
 
     return ControlDecision(
         case_id=case_id,
-        status=status,
-        exception_code=exception_code,
+        status=normalized_status,
+        exception_code=normalized_exception,
         severity=rule["severity"],
         action=rule["action"],
         reason=rule["reason"],
